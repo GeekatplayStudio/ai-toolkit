@@ -11,10 +11,12 @@ import classNames from 'classnames';
 
 export interface ConfirmState {
   title: string;
-  message?: string;
+  message?: React.ReactNode;
   confirmText?: string;
+  cancelText?: string;
   type?: 'danger' | 'warning' | 'info';
   inputTitle?: string;
+  hideCancel?: boolean;
   onConfirm?: (value?: string) => void | Promise<void>;
   onCancel?: () => void;
 }
@@ -158,7 +160,7 @@ export default function ConfirmModal() {
                     {confirm?.title}
                   </DialogTitle>
                   <div className="mt-2">
-                    <p className="text-sm text-gray-200">{confirm?.message}</p>
+                    <div className="text-sm text-gray-200">{confirm?.message}</div>
                     <div className={classNames('mt-4 w-full', { hidden: !confirm?.inputTitle })}>
                       <form onSubmit={(e) => {
                         e.preventDefault()
@@ -184,14 +186,16 @@ export default function ConfirmModal() {
               >
                 {confirm?.confirmText || 'Confirm'}
               </button>
-              <button
-                type="button"
-                data-autofocus
-                onClick={onCancel}
-                className="mt-3 inline-flex w-full justify-center rounded-md bg-gray-800 px-3 py-2 text-sm font-semibold text-gray-200 hover:bg-gray-800 sm:mt-0 sm:w-auto ring-0"
-              >
-                Cancel
-              </button>
+              {!confirm?.hideCancel && (
+                <button
+                  type="button"
+                  data-autofocus
+                  onClick={onCancel}
+                  className="mt-3 inline-flex w-full justify-center rounded-md bg-gray-800 px-3 py-2 text-sm font-semibold text-gray-200 hover:bg-gray-800 sm:mt-0 sm:w-auto ring-0"
+                >
+                  {confirm?.cancelText || 'Cancel'}
+                </button>
+              )}
             </div>
           </DialogPanel>
         </div>

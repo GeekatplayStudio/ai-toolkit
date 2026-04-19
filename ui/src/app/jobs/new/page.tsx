@@ -1,19 +1,29 @@
 'use client';
 
+import { useMemo } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { defaultJobConfig, defaultDatasetConfig, migrateJobConfig } from './jobConfig';
+import {
+  buildDraftRestoreSummary,
+  clearNewJobDraft,
+  loadNewJobDraft,
+  mergeDraftWithTemplate,
+  saveNewJobDraft,
+  summarizeDraftPaths,
+} from './draftPersistence';
 import { jobTypeOptions } from './options';
 import { JobConfig } from '@/types';
 import { objectCopy } from '@/utils/basic';
 import { useNestedState, setNestedValue } from '@/utils/hooks';
-import { SelectInput } from '@/components/formInputs';
+import { Checkbox, SelectInput } from '@/components/formInputs';
 import useSettings from '@/hooks/useSettings';
 import useGPUInfo from '@/hooks/useGPUInfo';
 import useDatasetList from '@/hooks/useDatasetList';
 import YAML from 'yaml';
 import path from 'path';
 import { TopBar, MainContent } from '@/components/layout';
+import { openConfirm } from '@/components/ConfirmModal';
 import { Button } from '@headlessui/react';
 import { FaChevronLeft } from 'react-icons/fa';
 import SimpleJob from './SimpleJob';
@@ -34,10 +44,56 @@ export default function TrainingForm() {
   const { datasets, status: datasetFetchStatus } = useDatasetList();
   const [datasetOptions, setDatasetOptions] = useState<{ value: string; label: string }[]>([]);
   const [showAdvancedView, setShowAdvancedView] = useState(false);
+  const [preserveSettings, setPreserveSettings] = useState(false);
+  const [isDraftBootstrapped, setIsDraftBootstrapped] = useState(false);
 
-  const [jobConfig, setJobConfig] = useNestedState<JobConfig>(objectCopy(migrateJobConfig(defaultJobConfig)));
+  const [jobConfig, setJobConfig] = useNestedState<JobConfig>(migrateJobConfig(objectCopy(defaultJobConfig)));
   const [status, setStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const isDraftEligible = !runId;
+
+  const buildTemplateJobConfig = useMemo(() => {
+    return () => {
+      let template = migrateJobConfig(objectCopy(defaultJobConfig));
+      if (isSettingsLoaded && settings.TRAINING_FOLDER) {
+        template = setNestedValue(template, settings.TRAINING_FOLDER, 'config.process[0].training_folder');
+      }
+      if (datasetOptions.length > 0) {
+        for (let i = 0; i < template.config.process[0].datasets.length; i++) {
+          if (template.config.process[0].datasets[i].folder_path === defaultDatasetConfig.folder_path) {
+            template = setNestedValue(
+              template,
+              datasetOptions[0].value,
+              `config.process[0].datasets[${i}].folder_path`,
+            );
+          }
+        }
+      }
+      return template;
+    };
+  }, [datasetOptions, isSettingsLoaded, settings.TRAINING_FOLDER]);
+
+  const sanitizeDraftJobConfig = (draftConfig: JobConfig) => {
+    const sanitizedConfig = migrateJobConfig(objectCopy(draftConfig));
+
+    if (sanitizedConfig.config.process[0].training_folder === defaultJobConfig.config.process[0].training_folder) {
+      sanitizedConfig.config.process[0].training_folder = buildTemplateJobConfig().config.process[0].training_folder;
+    }
+
+    sanitizedConfig.config.process[0].datasets = sanitizedConfig.config.process[0].datasets.map(dataset => {
+      if (dataset.folder_path !== defaultDatasetConfig.folder_path) {
+        return dataset;
+      }
+
+      return {
+        ...dataset,
+        folder_path: datasetOptions[0]?.value || dataset.folder_path,
+      };
+    });
+
+    return sanitizedConfig;
+  };
 
   const handleImportConfig = () => {
     fileInputRef.current?.click();
@@ -143,10 +199,121 @@ export default function TrainingForm() {
   }, [gpuList, isGPUInfoLoaded]);
 
   useEffect(() => {
-    if (isSettingsLoaded) {
-      setJobConfig(settings.TRAINING_FOLDER, 'config.process[0].training_folder');
+    if (!isSettingsLoaded) return;
+
+    setJobConfig((prevConfig: JobConfig) => {
+      const trainingFolder = prevConfig.config.process[0].training_folder;
+      if (trainingFolder && trainingFolder !== defaultJobConfig.config.process[0].training_folder) {
+        return prevConfig;
+      }
+
+      return setNestedValue(prevConfig, settings.TRAINING_FOLDER, 'config.process[0].training_folder');
+    });
+  }, [settings, isSettingsLoaded, setJobConfig]);
+
+  useEffect(() => {
+    if (isDraftBootstrapped) {
+      return;
     }
-  }, [settings, isSettingsLoaded]);
+
+    if (!isDraftEligible) {
+      setIsDraftBootstrapped(true);
+      return;
+    }
+
+    if (!isSettingsLoaded || !isGPUInfoLoaded || datasetFetchStatus !== 'success') {
+      return;
+    }
+
+    const savedDraft = loadNewJobDraft();
+    if (savedDraft?.preserveSettings && !cloneId) {
+      const sanitizedDraftConfig = sanitizeDraftJobConfig(savedDraft.jobConfig);
+      const restoredJobConfig = mergeDraftWithTemplate(buildTemplateJobConfig(), sanitizedDraftConfig);
+      const restoreSummary = buildDraftRestoreSummary(
+        {
+          ...savedDraft,
+          jobConfig: sanitizedDraftConfig,
+        },
+        restoredJobConfig,
+      );
+
+      setPreserveSettings(true);
+      setShowAdvancedView(savedDraft.showAdvancedView);
+      setGpuIDs(savedDraft.gpuIDs ?? null);
+      setJobConfig(restoredJobConfig);
+
+      if (restoreSummary.versionChanged || restoreSummary.addedPaths.length > 0 || restoreSummary.droppedPaths.length > 0) {
+        const addedPaths = summarizeDraftPaths(restoreSummary.addedPaths);
+        const droppedPaths = summarizeDraftPaths(restoreSummary.droppedPaths);
+
+        openConfirm({
+          title: 'Saved settings restored',
+          type: 'info',
+          confirmText: 'OK',
+          hideCancel: true,
+          message: (
+            <div className="space-y-3">
+              <p>AI Toolkit restored your saved New Job settings with the latest schema. Verify the form before saving.</p>
+              {addedPaths.length > 0 && (
+                <div>
+                  <div className="font-semibold text-blue-300">Added new defaults</div>
+                  <ul className="mt-1 list-disc pl-5 space-y-1">
+                    {addedPaths.map(pathItem => (
+                      <li key={pathItem}>{pathItem}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {droppedPaths.length > 0 && (
+                <div>
+                  <div className="font-semibold text-blue-300">Removed outdated settings</div>
+                  <ul className="mt-1 list-disc pl-5 space-y-1">
+                    {droppedPaths.map(pathItem => (
+                      <li key={pathItem}>{pathItem}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          ),
+        });
+      }
+    }
+
+    setIsDraftBootstrapped(true);
+  }, [
+    buildTemplateJobConfig,
+    cloneId,
+    datasetFetchStatus,
+    datasetOptions,
+    isDraftBootstrapped,
+    isDraftEligible,
+    isGPUInfoLoaded,
+    isSettingsLoaded,
+    setJobConfig,
+  ]);
+
+  useEffect(() => {
+    if (!isDraftEligible || !isDraftBootstrapped) {
+      return;
+    }
+
+    if (!preserveSettings) {
+      clearNewJobDraft();
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      saveNewJobDraft({
+        preserveSettings: true,
+        gpuIDs,
+        showAdvancedView,
+        jobConfig,
+      });
+    }, 150);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [gpuIDs, isDraftBootstrapped, isDraftEligible, jobConfig, preserveSettings, showAdvancedView]);
 
   const saveJob = async () => {
     if (status === 'saving') return;
@@ -250,6 +417,16 @@ export default function TrainingForm() {
           </>
         )}
 
+        <div className="pr-2">
+          {isDraftEligible && (
+            <Checkbox
+              label="Preserve settings"
+              checked={preserveSettings}
+              onChange={setPreserveSettings}
+              className="pr-4"
+            />
+          )}
+        </div>
         <div className="pr-2">
           <Button
             className="text-gray-200 bg-gray-800 px-3 py-1 rounded-md"

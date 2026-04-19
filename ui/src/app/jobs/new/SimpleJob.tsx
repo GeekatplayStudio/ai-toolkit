@@ -1,5 +1,5 @@
 'use client';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   modelArchs,
   ModelArch,
@@ -12,6 +12,7 @@ import {
 import { defaultDatasetConfig } from './jobConfig';
 import { GroupedSelectOption, JobConfig, SelectOption } from '@/types';
 import { objectCopy, tagsToObj, objToTags } from '@/utils/basic';
+import { generatePromptVariations } from './promptVariations';
 import {
   TextInput,
   TextAreaInput,
@@ -22,6 +23,7 @@ import {
   SliderInput,
 } from '@/components/formInputs';
 import Card from '@/components/Card';
+import { openConfirm } from '@/components/ConfirmModal';
 import { X, Copy } from 'lucide-react';
 import AddSingleImageModal, { openAddImageModal } from '@/components/AddSingleImageModal';
 import SampleControlImage from '@/components/SampleControlImage';
@@ -57,6 +59,8 @@ export default function SimpleJob({
   datasetOptions,
   isLoading,
 }: Props) {
+  const [generatedPromptCount, setGeneratedPromptCount] = useState<number | null>(25);
+
   const modelArch = useMemo(() => {
     return modelArchs.find(a => a.name === jobConfig.config.process[0].model.arch) as ModelArch;
   }, [jobConfig.config.process[0].model.arch]);
@@ -216,6 +220,45 @@ export default function SimpleJob({
   if (numSampleTopCols == 3) {
     sampleTopStyleClass = 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6';
   }
+
+  const replaceSamplePromptsWithGenerated = () => {
+    const basePrompt = jobConfig.config.process[0].sample.samples[0]?.prompt || '';
+    const generatedPrompts = generatePromptVariations({
+      basePrompt,
+      triggerWord: jobConfig.config.process[0].trigger_word,
+      count: generatedPromptCount || 25,
+    });
+
+    if (generatedPrompts.length === 0) {
+      return;
+    }
+
+    setJobConfig(
+      generatedPrompts.map(prompt => ({ prompt })),
+      'config.process[0].sample.samples',
+    );
+  };
+
+  const handleGenerateSamplePrompts = () => {
+    const hasExistingPromptSet = jobConfig.config.process[0].sample.samples
+      .slice(1)
+      .some(sample => sample.prompt && sample.prompt.trim().length > 0);
+
+    if (!hasExistingPromptSet) {
+      replaceSamplePromptsWithGenerated();
+      return;
+    }
+
+    openConfirm({
+      title: 'Replace existing sample prompts?',
+      message:
+        'This will rebuild the Sample Prompts list from the first prompt and trigger word, replacing the prompts you already entered.',
+      type: 'warning',
+      confirmText: 'Generate',
+      onConfirm: replaceSamplePromptsWithGenerated,
+    });
+  };
+
   return (
     <>
       <form
@@ -1259,7 +1302,25 @@ export default function SimpleJob({
               </div>
             </div>
             <FormGroup label={`Sample Prompts (${jobConfig.config.process[0].sample.samples.length})`} className="pt-2">
-              <div></div>
+              <div className="grid grid-cols-1 md:grid-cols-[180px,1fr] gap-3 w-full">
+                <NumberInput
+                  label="Generated Count"
+                  value={generatedPromptCount}
+                  onChange={value => setGeneratedPromptCount(value ?? 25)}
+                  min={1}
+                  max={50}
+                />
+                <div className="flex items-end">
+                  <button
+                    type="button"
+                    onClick={handleGenerateSamplePrompts}
+                    disabled={!jobConfig.config.process[0].sample.samples[0]?.prompt?.trim()}
+                    className="w-full px-4 py-2 bg-blue-700 hover:bg-blue-600 rounded-lg transition-colors disabled:bg-gray-700 disabled:text-gray-400 disabled:cursor-not-allowed"
+                  >
+                    Generate Variations From First Prompt
+                  </button>
+                </div>
+              </div>
             </FormGroup>
             {jobConfig.config.process[0].sample.samples.map((sample, i) => (
               <div key={i} className="rounded-lg pl-4 pr-1 mb-4 bg-gray-950">
