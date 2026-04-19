@@ -114,15 +114,37 @@ The AI Toolkit UI is a web interface for the AI Toolkit. It allows you to easily
 Requirements:
 - Node.js > 20
 
-The UI does not need to be kept running for the jobs to run. It is only needed to start/stop/monitor jobs. The commands below
-will install / update the UI and it's dependencies and start the UI. 
+The UI does not need to be kept running for the jobs to run. It is only needed to start/stop/monitor jobs.
+
+For a fresh clone, or after pulling UI dependency / Prisma schema changes, prepare the UI once:
+
+```bash
+cd ui
+npm run prepare_ui
+```
+
+Normal launches can then use:
 
 ```bash
 cd ui
 npm run build_and_start
 ```
 
+`prepare_ui` runs `npm install` and Prisma's `generate` / `db push` flow. `build_and_start` now only runs the startup preflight, builds the worker + Next.js app, and launches them. This avoids rewriting Prisma's Windows query engine DLL on every routine start.
+
 You can now access the UI at `http://localhost:8675` or `http://<your-ip>:8675` if you are running it on a server.
+
+### Windows Startup Notes
+
+On Windows, Prisma rotates `query_engine-windows.dll.node` through temporary names such as `query_engine-windows.dll.node.tmp12345` and may keep a `.old` copy while replacing the file. If an earlier AI Toolkit UI or worker process is still running, Windows keeps that DLL locked and the rename / delete step can fail.
+
+To reduce that failure mode:
+
+- Startup now checks for port `8675` conflicts before launching the UI.
+- Startup also checks for stale `node dist/cron/worker.js` processes, because the worker also loads Prisma and can lock the same DLL even when the UI port is free.
+- Routine startup no longer runs `npm install` and Prisma update steps every single time; keep those in `npm run prepare_ui` or your update flow instead.
+
+If startup reports an existing UI or worker process, stop that process first instead of launching a second copy.
 
 ## Securing the UI
 
@@ -240,6 +262,12 @@ formats are jpg, jpeg, and png. Webp currently has issues. The text files should
 but with a `.txt` extension. For example `image2.jpg` and `image2.txt`. The text file should contain only the caption.
 You can add the word `[trigger]` in the caption file and if you have `trigger_word` in your config, it will be automatically
 replaced. 
+
+### Caption File Encoding on Windows
+
+Some Windows captioning tools and editors save `.txt` or `.json` captions as ANSI / Windows-1252 instead of UTF-8. When that happens, smart quotes and similar characters become bytes such as `0x92`, `0x93`, or `0x94`, which can trigger `UnicodeDecodeError` during dataset loading.
+
+The loader now reads caption files as `utf-8-sig` first and falls back to `cp1252` for legacy Windows caption files, while printing a warning so you can convert the files to UTF-8 later. UTF-8 is still the recommended format, but non-UTF-8 captions should no longer crash training.
 
 Images are never upscaled but they are downscaled and placed in buckets for batching. **You do not need to crop/resize your images**.
 The loader will automatically resize them and can handle varying aspect ratios. 
