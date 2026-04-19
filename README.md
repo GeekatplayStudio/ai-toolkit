@@ -79,6 +79,8 @@ Windows:
 
 If you are having issues with Windows. I recommend using the easy install script at [https://github.com/Tavris1/AI-Toolkit-Easy-Install](https://github.com/Tavris1/AI-Toolkit-Easy-Install)
 
+Versioned copies of the Windows Easy Install launchers used in that wrapper now live in `windows/Start-AI-Toolkit.bat` and `windows/Update-AI-Toolkit.bat` so downstream startup changes can be reviewed and tracked in-repo. Those files mirror the wrapper-root launchers; copy them into the Easy Install wrapper root before using them there.
+
 ```bash
 git clone https://github.com/ostris/ai-toolkit.git
 cd ai-toolkit
