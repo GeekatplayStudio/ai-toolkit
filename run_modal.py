@@ -85,7 +85,7 @@ if os.environ.get("DEBUG_TOOLKIT", "0") == "1":
     torch.autograd.set_detect_anomaly(True)
 
 import argparse
-from toolkit.job import get_job
+from toolkit.job import cleanup_job, get_job, notify_job_error
 
 def print_end_message(jobs_completed, jobs_failed):
     failure_string = f"{jobs_failed} failure{'' if jobs_failed == 1 else 's'}" if jobs_failed > 0 else ""
@@ -118,6 +118,7 @@ def main(config_file_list_str: str, recover: bool = False, name: str = None):
     print(f"Running {len(config_file_list)} job{'' if len(config_file_list) == 1 else 's'}")
 
     for config_file in config_file_list:
+        job = None
         try:
             job = get_job(config_file, name)
             
@@ -131,14 +132,22 @@ def main(config_file_list_str: str, recover: bool = False, name: str = None):
             # commit the volume after training
             model_volume.commit()
             
-            job.cleanup()
             jobs_completed += 1
         except Exception as e:
             print(f"Error running job: {e}")
             jobs_failed += 1
+            try:
+                notify_job_error(job, e)
+            except Exception as e2:
+                print(f"Error running on_error: {e2}")
             if not recover:
                 print_end_message(jobs_completed, jobs_failed)
-                raise e
+                raise
+        finally:
+            try:
+                cleanup_job(job)
+            except Exception as cleanup_error:
+                print(f"Error cleaning up job: {cleanup_error}")
 
     print_end_message(jobs_completed, jobs_failed)
 

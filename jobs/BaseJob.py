@@ -68,4 +68,6 @@ class BaseJob:
     def cleanup(self):
         # if you implement this in child clas,
         # be sure to call super().cleanup() LAST
-        del self
+        if hasattr(self, 'process'):
+            self.process.clear()
+            self.process = []

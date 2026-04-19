@@ -1,5 +1,5 @@
 'use client';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   modelArchs,
   ModelArch,
@@ -10,7 +10,7 @@ import {
   SampleTags,
 } from './options';
 import { defaultDatasetConfig } from './jobConfig';
-import { GroupedSelectOption, JobConfig, SelectOption } from '@/types';
+import { GpuInfo, GroupedSelectOption, JobConfig, SelectOption } from '@/types';
 import { objectCopy, tagsToObj, objToTags } from '@/utils/basic';
 import { generatePromptVariations } from './promptVariations';
 import {
@@ -28,9 +28,11 @@ import { X, Copy } from 'lucide-react';
 import AddSingleImageModal, { openAddImageModal } from '@/components/AddSingleImageModal';
 import SampleControlImage from '@/components/SampleControlImage';
 import { FlipHorizontal2, FlipVertical2 } from 'lucide-react';
-import { handleModelArchChange } from './utils';
+import { applyModelArchPreset, getRecommendedLowVramInfo, getRecommendedLowVramSetting } from './utils';
 import { IoFlaskSharp } from 'react-icons/io5';
 import { isMac } from '@/helpers/basic';
+
+const formatVramGiB = (value: number) => (Number.isInteger(value) ? `${value}` : value.toFixed(1));
 
 type Props = {
   jobConfig: JobConfig;
@@ -40,7 +42,7 @@ type Props = {
   runId: string | null;
   gpuIDs: string | null;
   setGpuIDs: (value: string | null) => void;
-  gpuList: any;
+  gpuList: GpuInfo[];
   datasetOptions: any;
   isLoading?: boolean;
 };
@@ -60,6 +62,8 @@ export default function SimpleJob({
   isLoading,
 }: Props) {
   const [generatedPromptCount, setGeneratedPromptCount] = useState<number | null>(25);
+  const lowVramModeRef = useRef<'idle' | 'auto' | 'manual'>('idle');
+  const lastAutoLowVramRef = useRef<boolean | null>(null);
 
   const modelArch = useMemo(() => {
     return modelArchs.find(a => a.name === jobConfig.config.process[0].model.arch) as ModelArch;
@@ -68,6 +72,14 @@ export default function SimpleJob({
   const jobType = useMemo(() => {
     return jobTypeOptions.find(j => j.value === jobConfig.config.process[0].type);
   }, [jobConfig.config.process[0].type]);
+
+  const lowVramRecommendationInfo = useMemo(() => {
+    if (!modelArch?.additionalSections?.includes('model.low_vram')) {
+      return undefined;
+    }
+
+    return getRecommendedLowVramInfo(jobConfig.config.process[0].model.arch, gpuIDs, gpuList);
+  }, [gpuIDs, gpuList, jobConfig.config.process[0].model.arch, modelArch]);
 
   const disableSections = useMemo(() => {
     let sections: string[] = [];
@@ -259,6 +271,77 @@ export default function SimpleJob({
     });
   };
 
+  const applyPresetForArch = (archName: string, force = false) => {
+    const nextConfig = applyModelArchPreset(jobConfig, archName, {
+      force,
+      gpuIDs,
+      gpuList,
+    });
+    setJobConfig(nextConfig);
+    lowVramModeRef.current = 'auto';
+    lastAutoLowVramRef.current = getRecommendedLowVramSetting(archName, gpuIDs, gpuList) ?? null;
+  };
+
+  useEffect(() => {
+    if (!modelArch?.additionalSections?.includes('model.low_vram')) {
+      lowVramModeRef.current = 'idle';
+      lastAutoLowVramRef.current = null;
+      return;
+    }
+
+    if (lowVramModeRef.current !== 'auto') {
+      return;
+    }
+
+    const recommendedLowVram = getRecommendedLowVramSetting(jobConfig.config.process[0].model.arch, gpuIDs, gpuList);
+    if (recommendedLowVram === undefined) {
+      return;
+    }
+
+    if (lastAutoLowVramRef.current === null) {
+      setJobConfig(recommendedLowVram, 'config.process[0].model.low_vram');
+      lastAutoLowVramRef.current = recommendedLowVram;
+      return;
+    }
+
+    if (recommendedLowVram === lastAutoLowVramRef.current) {
+      return;
+    }
+
+    if (jobConfig.config.process[0].model.low_vram !== lastAutoLowVramRef.current) {
+      lowVramModeRef.current = 'manual';
+      lastAutoLowVramRef.current = null;
+      return;
+    }
+
+    setJobConfig(recommendedLowVram, 'config.process[0].model.low_vram');
+    lastAutoLowVramRef.current = recommendedLowVram;
+  }, [gpuIDs, gpuList, jobConfig.config.process[0].model.arch, jobConfig.config.process[0].model.low_vram, modelArch, setJobConfig]);
+
+  const reapplyRecommendedPreset = () => {
+    applyPresetForArch(jobConfig.config.process[0].model.arch, true);
+  };
+
+  const lowVramRecommendationText = (() => {
+    if (!lowVramRecommendationInfo) {
+      return null;
+    }
+
+    const recommendationLabel = lowVramRecommendationInfo.recommendedLowVram ? 'On' : 'Off';
+    const gpuLabel = `${formatVramGiB(lowVramRecommendationInfo.selectedGpuVramGiB)} GB`;
+    const thresholdLabel = `${formatVramGiB(lowVramRecommendationInfo.thresholdGiB)} GB`;
+
+    if (lowVramModeRef.current === 'auto') {
+      return `Auto: ${recommendationLabel} for the selected ${gpuLabel} GPU. Threshold: ${thresholdLabel}.`;
+    }
+
+    if (jobConfig.config.process[0].model.low_vram !== lowVramRecommendationInfo.recommendedLowVram) {
+      return `Recommended for the selected ${gpuLabel} GPU: ${recommendationLabel}. Manual override active.`;
+    }
+
+    return `Recommended for the selected ${gpuLabel} GPU: ${recommendationLabel}. Threshold: ${thresholdLabel}.`;
+  })();
+
   return (
     <>
       <form
@@ -316,10 +399,20 @@ export default function SimpleJob({
               label="Model Architecture"
               value={jobConfig.config.process[0].model.arch}
               onChange={value => {
-                handleModelArchChange(jobConfig.config.process[0].model.arch, value, jobConfig, setJobConfig);
+                applyPresetForArch(value);
               }}
               options={groupedModelOptions}
             />
+            <div className="flex items-center justify-between gap-3 pt-2 text-xs text-gray-400">
+              <span>Switching models applies the recommended preset for that model.</span>
+              <button
+                type="button"
+                className="font-medium text-blue-400 transition-colors hover:text-blue-300"
+                onClick={reapplyRecommendedPreset}
+              >
+                Reapply preset
+              </button>
+            </div>
             <TextInput
               label="Name or Path"
               value={jobConfig.config.process[0].model.name_or_path}
@@ -352,8 +445,13 @@ export default function SimpleJob({
                 <Checkbox
                   label="Low VRAM"
                   checked={jobConfig.config.process[0].model.low_vram}
-                  onChange={value => setJobConfig(value, 'config.process[0].model.low_vram')}
+                  onChange={value => {
+                    lowVramModeRef.current = 'manual';
+                    lastAutoLowVramRef.current = null;
+                    setJobConfig(value, 'config.process[0].model.low_vram');
+                  }}
                 />
+                {lowVramRecommendationText && <p className="mt-2 text-xs text-gray-400">{lowVramRecommendationText}</p>}
               </FormGroup>
             )}
             {modelArch?.additionalSections?.includes('model.qie.match_target_res') && (
@@ -1520,7 +1618,7 @@ export default function SimpleJob({
                       </div>
                       {modelArch?.additionalSections?.includes('datasets.multi_control_paths') && (
                         <FormGroup label="Control Images" className="pt-2 ml-4">
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-2 mt-2">
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-2">
                             {['ctrl_img_1', 'ctrl_img_2', 'ctrl_img_3'].map((ctrlKey, ctrl_idx) => (
                               <SampleControlImage
                                 key={ctrlKey}

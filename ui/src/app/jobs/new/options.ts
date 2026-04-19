@@ -60,6 +60,7 @@ export interface ModelArch {
 
 const defaultNameOrPath = '';
 const defaultLinearRank = 32
+const defaultDatasetResolution = [512, 768, 1024];
 
 export const modelArchs: ModelArch[] = [
   {
@@ -926,6 +927,222 @@ export const modelArchs: ModelArch[] = [
   // Sort by label, case-insensitive
   return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
 }) as any;
+
+const recommendedModelDefaults: Record<string, NonNullable<ModelArch['defaults']>> = {
+  flux: {
+    'config.process[0].network.linear': [16, defaultLinearRank],
+    'config.process[0].network.linear_alpha': [16, defaultLinearRank],
+    'config.process[0].save.dtype': ['fp16', 'bf16'],
+    'config.process[0].datasets[x].cache_latents_to_disk': [true, false],
+    'config.process[0].train.steps': [2000, 3000],
+    'config.process[0].train.ema_config.use_ema': [true, false],
+    'config.process[0].sample.sample_steps': [20, 30],
+  },
+  flux_kontext: {
+    'config.process[0].network.linear': [16, defaultLinearRank],
+    'config.process[0].network.linear_alpha': [16, defaultLinearRank],
+    'config.process[0].save.dtype': ['fp16', 'bf16'],
+    'config.process[0].datasets[x].cache_latents_to_disk': [true, false],
+    'config.process[0].datasets[x].resolution': [[512, 768], defaultDatasetResolution],
+    'config.process[0].sample.sample_steps': [20, 30],
+  },
+  flex1: {
+    'config.process[0].network.linear': [16, defaultLinearRank],
+    'config.process[0].network.linear_alpha': [16, defaultLinearRank],
+    'config.process[0].save.dtype': ['fp16', 'bf16'],
+    'config.process[0].datasets[x].cache_latents_to_disk': [true, false],
+    'config.process[0].train.steps': [2000, 3000],
+    'config.process[0].train.ema_config.use_ema': [true, false],
+    'config.process[0].model.quantize_kwargs': [{ exclude: ['*time_text_embed*'] }, undefined],
+    'config.process[0].sample.sample_steps': [25, 30],
+  },
+  flex2: {
+    'config.process[0].save.dtype': ['fp16', 'bf16'],
+    'config.process[0].train.timestep_type': ['shift', 'sigmoid'],
+    'config.process[0].train.optimizer_params.weight_decay': [1e-5, 1e-4],
+    'config.process[0].model.model_kwargs': [
+      {
+        invert_inpaint_mask_chance: 0.5,
+        inpaint_dropout: 0.5,
+        control_dropout: 0.5,
+        inpaint_random_chance: 0.5,
+        do_random_inpainting: false,
+        random_blur_mask: true,
+        random_dialate_mask: true,
+      },
+      {},
+    ],
+    'config.process[0].sample.sample_steps': [25, 30],
+  },
+  chroma: {
+    'config.process[0].network.linear': [16, defaultLinearRank],
+    'config.process[0].network.linear_alpha': [16, defaultLinearRank],
+    'config.process[0].save.dtype': ['fp16', 'bf16'],
+    'config.process[0].datasets[x].cache_latents_to_disk': [true, false],
+    'config.process[0].train.steps': [2000, 3000],
+    'config.process[0].train.ema_config.use_ema': [true, false],
+    'config.process[0].sample.sample_steps': [25, 30],
+  },
+  lumina2: {
+    'config.process[0].network.linear': [16, defaultLinearRank],
+    'config.process[0].network.linear_alpha': [16, defaultLinearRank],
+    'config.process[0].save.max_step_saves_to_keep': [2, 4],
+    'config.process[0].train.steps': [2000, 3000],
+    'config.process[0].train.timestep_type': ['lumina2_shift', 'sigmoid'],
+    'config.process[0].train.ema_config.use_ema': [true, false],
+    'config.process[0].sample.sample_steps': [25, 30],
+  },
+  qwen_image: {
+    'config.process[0].network.linear': [16, defaultLinearRank],
+    'config.process[0].network.linear_alpha': [16, defaultLinearRank],
+    'config.process[0].save.dtype': ['fp16', 'bf16'],
+    'config.process[0].datasets[x].cache_latents_to_disk': [true, false],
+    'config.process[0].train.steps': [2000, 3000],
+    'config.process[0].train.cache_text_embeddings': [true, false],
+    'config.process[0].model.qtype': ['uint3|ostris/accuracy_recovery_adapters/qwen_image_torchao_uint3.safetensors', 'qfloat8'],
+    'config.process[0].sample.guidance_scale': [3, 4],
+    'config.process[0].sample.sample_steps': [25, 30],
+  },
+  'qwen_image:2512': {
+    'config.process[0].network.linear': [16, defaultLinearRank],
+    'config.process[0].network.linear_alpha': [16, defaultLinearRank],
+    'config.process[0].save.dtype': ['fp16', 'bf16'],
+    'config.process[0].datasets[x].cache_latents_to_disk': [true, false],
+    'config.process[0].train.steps': [2000, 3000],
+    'config.process[0].train.cache_text_embeddings': [true, false],
+    'config.process[0].sample.guidance_scale': [3, 4],
+    'config.process[0].sample.sample_steps': [25, 30],
+  },
+  qwen_image_edit: {
+    'config.process[0].network.linear': [16, defaultLinearRank],
+    'config.process[0].network.linear_alpha': [16, defaultLinearRank],
+    'config.process[0].save.dtype': ['fp16', 'bf16'],
+    'config.process[0].train.cache_text_embeddings': [true, false],
+    'config.process[0].model.qtype': ['uint3|ostris/accuracy_recovery_adapters/qwen_image_edit_torchao_uint3.safetensors', 'qfloat8'],
+    'config.process[0].sample.guidance_scale': [3, 4],
+    'config.process[0].sample.sample_steps': [25, 30],
+  },
+  qwen_image_edit_plus: {
+    'config.process[0].network.linear': [16, defaultLinearRank],
+    'config.process[0].network.linear_alpha': [16, defaultLinearRank],
+    'config.process[0].save.dtype': ['fp16', 'bf16'],
+    'config.process[0].train.cache_text_embeddings': [true, false],
+    'config.process[0].model.qtype': ['uint3|ostris/accuracy_recovery_adapters/qwen_image_edit_2509_torchao_uint3.safetensors', 'qfloat8'],
+    'config.process[0].sample.guidance_scale': [3, 4],
+    'config.process[0].sample.sample_steps': [25, 30],
+  },
+  'qwen_image_edit_plus:2511': {
+    'config.process[0].network.linear': [16, defaultLinearRank],
+    'config.process[0].network.linear_alpha': [16, defaultLinearRank],
+    'config.process[0].save.dtype': ['fp16', 'bf16'],
+    'config.process[0].train.cache_text_embeddings': [true, false],
+    'config.process[0].model.qtype': ['uint3|ostris/accuracy_recovery_adapters/qwen_image_edit_2511_torchao_uint3.safetensors', 'qfloat8'],
+    'config.process[0].sample.guidance_scale': [3, 4],
+    'config.process[0].sample.sample_steps': [25, 30],
+  },
+  hidream: {
+    'config.process[0].model.extras_name_or_path': ['HiDream-ai/HiDream-I1-Full', undefined],
+    'config.process[0].sample.sample_steps': [25, 30],
+  },
+  omnigen2: {
+    'config.process[0].network.linear': [16, defaultLinearRank],
+    'config.process[0].network.linear_alpha': [16, defaultLinearRank],
+    'config.process[0].save.dtype': ['fp16', 'bf16'],
+    'config.process[0].datasets[x].cache_latents_to_disk': [true, false],
+    'config.process[0].train.timestep_type': ['sigmoid', 'sigmoid'],
+    'config.process[0].sample.sample_steps': [25, 30],
+  },
+  'wan21:1b': {
+    'config.process[0].save.dtype': ['fp16', 'bf16'],
+    'config.process[0].datasets[x].cache_latents_to_disk': [true, false],
+    'config.process[0].datasets[x].resolution': [[632], defaultDatasetResolution],
+    'config.process[0].train.steps': [2000, 3000],
+    'config.process[0].train.ema_config.use_ema': [true, false],
+    'config.process[0].sample.width': [832, 1024],
+    'config.process[0].sample.height': [480, 1024],
+    'config.process[0].sample.num_frames': [40, 41],
+    'config.process[0].sample.fps': [15, 16],
+    'config.process[0].sample.guidance_scale': [5, 4],
+  },
+  'wan21:14b': {
+    'config.process[0].save.dtype': ['fp16', 'bf16'],
+    'config.process[0].datasets[x].cache_latents_to_disk': [true, false],
+    'config.process[0].datasets[x].resolution': [[632], defaultDatasetResolution],
+    'config.process[0].train.steps': [2000, 3000],
+    'config.process[0].train.unload_text_encoder': [true, false],
+    'config.process[0].train.ema_config.use_ema': [true, false],
+    'config.process[0].sample.width': [832, 1024],
+    'config.process[0].sample.height': [480, 1024],
+    'config.process[0].sample.num_frames': [40, 41],
+    'config.process[0].sample.fps': [15, 16],
+    'config.process[0].sample.guidance_scale': [5, 4],
+  },
+  'wan21_i2v:14b480p': {
+    'config.process[0].save.dtype': ['fp16', 'bf16'],
+    'config.process[0].datasets[x].cache_latents_to_disk': [true, false],
+    'config.process[0].datasets[x].resolution': [[632], defaultDatasetResolution],
+    'config.process[0].train.steps': [2000, 3000],
+    'config.process[0].train.ema_config.use_ema': [true, false],
+    'config.process[0].sample.guidance_scale': [5, 4],
+  },
+  'wan21_i2v:14b': {
+    'config.process[0].save.dtype': ['fp16', 'bf16'],
+    'config.process[0].datasets[x].cache_latents_to_disk': [true, false],
+    'config.process[0].datasets[x].resolution': [[632], defaultDatasetResolution],
+    'config.process[0].train.steps': [2000, 3000],
+    'config.process[0].train.ema_config.use_ema': [true, false],
+    'config.process[0].sample.guidance_scale': [5, 4],
+  },
+  'wan22_14b:t2v': {
+    'config.process[0].save.dtype': ['fp16', 'bf16'],
+    'config.process[0].train.steps': [2000, 3000],
+    'config.process[0].train.switch_boundary_every': [10, 1],
+    'config.process[0].train.cache_text_embeddings': [true, false],
+    'config.process[0].model.qtype': ['uint4|ostris/accuracy_recovery_adapters/wan22_14b_t2i_torchao_uint4.safetensors', 'qfloat8'],
+    'config.process[0].sample.num_frames': [1, 41],
+    'config.process[0].sample.guidance_scale': [3.5, 4],
+    'config.process[0].sample.sample_steps': [25, 30],
+  },
+  wan22_14b_i2v: {
+    'config.process[0].save.dtype': ['fp16', 'bf16'],
+    'config.process[0].train.steps': [2000, 3000],
+    'config.process[0].train.switch_boundary_every': [10, 1],
+    'config.process[0].train.cache_text_embeddings': [true, false],
+    'config.process[0].model.qtype': ['uint4|ostris/accuracy_recovery_adapters/wan22_14b_i2v_torchao_uint4.safetensors', 'qfloat8'],
+    'config.process[0].sample.guidance_scale': [3.5, 4],
+    'config.process[0].sample.sample_steps': [25, 30],
+  },
+  'zimage:turbo': {
+    'config.process[0].network.linear': [64, defaultLinearRank],
+    'config.process[0].network.linear_alpha': [64, defaultLinearRank],
+    'config.process[0].save.save_every': [500, 250],
+    'config.process[0].save.max_step_saves_to_keep': [8, 4],
+  },
+  zimage: {
+    'config.process[0].network.linear': [64, defaultLinearRank],
+    'config.process[0].network.linear_alpha': [64, defaultLinearRank],
+    'config.process[0].save.save_every': [500, 250],
+    'config.process[0].save.max_step_saves_to_keep': [8, 4],
+  },
+  'zimage:deturbo': {
+    'config.process[0].network.linear': [64, defaultLinearRank],
+    'config.process[0].network.linear_alpha': [64, defaultLinearRank],
+    'config.process[0].save.save_every': [500, 250],
+    'config.process[0].save.max_step_saves_to_keep': [8, 4],
+  },
+};
+
+for (const arch of modelArchs) {
+  const recommendedDefaults = recommendedModelDefaults[arch.name];
+  if (!recommendedDefaults) {
+    continue;
+  }
+
+  arch.defaults = {
+    ...(arch.defaults || {}),
+    ...recommendedDefaults,
+  };
+}
 
 export const groupedModelOptions: GroupedSelectOption[] = modelArchs.reduce((acc, arch) => {
   const group = acc.find(g => g.label === arch.group);

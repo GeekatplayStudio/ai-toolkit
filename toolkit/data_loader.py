@@ -2,7 +2,9 @@ import copy
 import json
 import os
 import random
+import time
 import traceback
+import uuid
 from functools import lru_cache
 from typing import List, TYPE_CHECKING
 
@@ -39,6 +41,124 @@ if TYPE_CHECKING:
 image_extensions = ['.jpg', '.jpeg', '.png', '.webp']
 video_extensions = ['.mp4', '.avi', '.mov', '.webm', '.mkv', '.wmv', '.m4v', '.flv']
 audio_extensions = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a']
+SIZE_DATABASE_VERSION = "0.1.2"
+SIZE_DATABASE_LOCK_TIMEOUT_SECONDS = 30.0
+SIZE_DATABASE_STALE_LOCK_SECONDS = 120.0
+
+
+def load_rgb_image(image_path: str) -> Image.Image:
+    try:
+        with Image.open(image_path) as source_image:
+            source_image.load()
+            return exif_transpose(source_image).convert('RGB')
+    except Exception as error:
+        raise ValueError(f"Failed to open image '{image_path}': {error}") from error
+
+
+def get_valid_image_size(image_path: str):
+    try:
+        return image_utils.get_image_size(image_path)
+    except image_utils.UnknownImageFormat:
+        return load_rgb_image(image_path).size
+
+
+def load_size_database_file(
+    dataset_size_file: str,
+    dataloader_version: str,
+    *,
+    announce_upgrade: bool = False,
+):
+    if not os.path.exists(dataset_size_file):
+        return {"__version__": dataloader_version}
+
+    try:
+        with open(dataset_size_file, 'r', encoding='utf-8') as file_handle:
+            size_database = json.load(file_handle)
+    except Exception as error:
+        print_acc(f"Error loading size database: {dataset_size_file}")
+        print_acc(error)
+        return {"__version__": dataloader_version}
+
+    if not isinstance(size_database, dict):
+        return {"__version__": dataloader_version}
+
+    if size_database.get("__version__") != dataloader_version:
+        if announce_upgrade:
+            print_acc("Upgrading size database to new version")
+        return {"__version__": dataloader_version}
+
+    size_database["__version__"] = dataloader_version
+    return size_database
+
+
+def _acquire_lock_file(lock_file_path: str):
+    start_time = time.monotonic()
+    while True:
+        try:
+            lock_fd = os.open(lock_file_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            try:
+                os.write(lock_fd, str(os.getpid()).encode('utf-8'))
+            finally:
+                os.close(lock_fd)
+            return
+        except FileExistsError:
+            try:
+                lock_age = time.time() - os.path.getmtime(lock_file_path)
+                if lock_age > SIZE_DATABASE_STALE_LOCK_SECONDS:
+                    os.remove(lock_file_path)
+                    continue
+            except FileNotFoundError:
+                continue
+            except OSError:
+                pass
+
+            if time.monotonic() - start_time > SIZE_DATABASE_LOCK_TIMEOUT_SECONDS:
+                raise TimeoutError(f"Timed out waiting for dataset size database lock: {lock_file_path}")
+
+            time.sleep(0.05)
+
+
+def _release_lock_file(lock_file_path: str):
+    try:
+        os.remove(lock_file_path)
+    except FileNotFoundError:
+        pass
+
+
+def _atomic_write_json(file_path: str, data):
+    temp_path = f"{file_path}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
+    try:
+        with open(temp_path, 'w', encoding='utf-8') as file_handle:
+            json.dump(data, file_handle)
+        os.replace(temp_path, file_path)
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
+def merge_and_save_size_database(
+    dataset_size_file: str,
+    local_size_database: dict,
+    dataloader_version: str,
+):
+    lock_file_path = f"{dataset_size_file}.lock"
+    _acquire_lock_file(lock_file_path)
+    try:
+        current_size_database = load_size_database_file(dataset_size_file, dataloader_version)
+        merged_size_database = dict(current_size_database)
+        for key, value in local_size_database.items():
+            if key == "__version__":
+                continue
+            merged_size_database[key] = value
+        merged_size_database["__version__"] = dataloader_version
+        _atomic_write_json(dataset_size_file, merged_size_database)
+        local_size_database.clear()
+        local_size_database.update(merged_size_database)
+    finally:
+        _release_lock_file(lock_file_path)
 
 
 class RescaleTransform:
@@ -104,13 +224,16 @@ class ImageDataset(Dataset, CaptionMixin):
         print_acc(f"  -  Preprocessing image dimensions")
         new_file_list = []
         bad_count = 0
+        unreadable_count = 0
         for file in tqdm(self.file_list):
             try:
-                w, h = image_utils.get_image_size(file)
-            except image_utils.UnknownImageFormat:
-                img = exif_transpose(Image.open(file))
-                w, h = img.size
-            # img = Image.open(file)
+                w, h = get_valid_image_size(file)
+            except ValueError as error:
+                unreadable_count += 1
+                print_acc(f"  -  Skipping unreadable image: {file}")
+                print_acc(f"     {error}")
+                continue
+
             if int(min([w, h]) * self.scale) >= self.resolution:
                 new_file_list.append(file)
             else:
@@ -120,7 +243,10 @@ class ImageDataset(Dataset, CaptionMixin):
 
         print_acc(f"  -  Found {len(self.file_list)} images")
         print_acc(f"  -  Found {bad_count} images that are too small")
-        assert len(self.file_list) > 0, f"no images found in {self.path}"
+        if unreadable_count > 0:
+            print_acc(f"  -  Skipped {unreadable_count} unreadable images")
+        if len(self.file_list) == 0:
+            raise ValueError(f"no readable images found in {self.path}")
 
         self.transform = transforms.Compose([
             transforms.ToTensor(),
@@ -142,12 +268,13 @@ class ImageDataset(Dataset, CaptionMixin):
     def __getitem__(self, index):
         img_path = self.file_list[index]
         try:
-            img = exif_transpose(Image.open(img_path)).convert('RGB')
+            img = load_rgb_image(img_path)
         except Exception as e:
             print_acc(f"Error opening image: {img_path}")
             print_acc(e)
-            # make a noise image if we can't open it
-            img = Image.fromarray(np.random.randint(0, 255, (1024, 1024, 3), dtype=np.uint8))
+            raise RuntimeError(
+                f"Failed to load training image '{img_path}'. Remove or repair the file before continuing."
+            ) from e
 
         # Downscale the source image first
         img = img.resize((int(img.size[0] * self.scale), int(img.size[1] * self.scale)), Image.BICUBIC)
@@ -476,24 +603,12 @@ class AiToolkitDataset(LatentCachingMixin, ControlCachingMixin, CLIPCachingMixin
             dataset_folder = os.path.dirname(dataset_folder)
         
         dataset_size_file = os.path.join(dataset_folder, '.aitk_size.json')
-        dataloader_version = "0.1.2"
-        if os.path.exists(dataset_size_file):
-            try:
-                with open(dataset_size_file, 'r') as f:
-                    self.size_database = json.load(f)
-                
-                if "__version__" not in self.size_database or self.size_database["__version__"] != dataloader_version:
-                    print_acc("Upgrading size database to new version")
-                    # old version, delete and recreate
-                    self.size_database = {}
-            except Exception as e:
-                print_acc(f"Error loading size database: {dataset_size_file}")
-                print_acc(e)
-                self.size_database = {}
-        else:
-            self.size_database = {}
-        
-        self.size_database["__version__"] = dataloader_version
+        dataloader_version = SIZE_DATABASE_VERSION
+        self.size_database = load_size_database_file(
+            dataset_size_file,
+            dataloader_version,
+            announce_upgrade=True,
+        )
 
         # set latent space version
         latent_space_version = "sd1"
@@ -550,8 +665,7 @@ class AiToolkitDataset(LatentCachingMixin, ControlCachingMixin, CLIPCachingMixin
                 bad_count += 1
 
         # save the size database
-        with open(dataset_size_file, 'w') as f:
-            json.dump(self.size_database, f)
+        merge_and_save_size_database(dataset_size_file, self.size_database, dataloader_version)
         
         if self.is_video:
             print_acc(f"  -  Found {len(self.file_list)} videos")

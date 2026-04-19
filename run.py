@@ -35,7 +35,7 @@ if seed is not None:
     torch.cuda.manual_seed_all(seed)
 
 import argparse
-from toolkit.job import get_job
+from toolkit.job import cleanup_job, get_job, notify_job_error
 from toolkit.accelerator import get_accelerator
 from toolkit.print import print_acc, setup_log_to_file
 
@@ -106,29 +106,37 @@ def main():
         print_acc(f"Running {len(config_file_list)} job{'' if len(config_file_list) == 1 else 's'}")
 
     for config_file in config_file_list:
+        job = None
         try:
             job = get_job(config_file, args.name)
             job.run()
-            job.cleanup()
             jobs_completed += 1
+        except KeyboardInterrupt as e:
+            print_acc("Job interrupted by user")
+            jobs_failed += 1
+            try:
+                notify_job_error(job, e)
+            except Exception as e2:
+                print_acc(f"Error running on_error: {e2}")
+            print_end_message(jobs_completed, jobs_failed)
+            raise
         except Exception as e:
             print_acc(f"Error running job: {e}")
             jobs_failed += 1
             try:
-                job.process[0].on_error(e)
+                notify_job_error(job, e)
             except Exception as e2:
                 print_acc(f"Error running on_error: {e2}")
             if not args.recover:
                 print_end_message(jobs_completed, jobs_failed)
-                raise e
-        except KeyboardInterrupt as e:
+                raise
+        finally:
             try:
-                job.process[0].on_error(e)
-            except Exception as e2:
-                print_acc(f"Error running on_error: {e2}")
-            if not args.recover:
-                print_end_message(jobs_completed, jobs_failed)
-                raise e
+                cleanup_job(job)
+            except Exception as cleanup_error:
+                print_acc(f"Error cleaning up job: {cleanup_error}")
+
+    print_end_message(jobs_completed, jobs_failed)
 
 
 if __name__ == '__main__':

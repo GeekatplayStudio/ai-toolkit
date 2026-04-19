@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Modal } from '@/components/Modal';
 import { createGlobalState } from 'react-global-hooks';
 import { useFromNull } from '@/hooks/useFromNull';
@@ -11,7 +11,12 @@ import {
   TextInput,
 } from '@/components/formInputs';
 import { CaptionJobConfig } from '@/types';
-import { defaultCaptionJobConfig, handleCaptionerTypeChange } from '@/helpers/captionJobConfig';
+import {
+  applyCaptionerTypePreset,
+  defaultCaptionJobConfig,
+  getRecommendedCaptionLowVramInfo,
+  getRecommendedCaptionLowVramSetting,
+} from '@/helpers/captionJobConfig';
 import { objectCopy } from '@/utils/basic';
 import { useNestedState } from '@/utils/hooks';
 import {
@@ -28,6 +33,8 @@ import { apiClient } from '@/utils/api';
 import { v4 as uuidv4 } from 'uuid';
 import { startJob } from '@/utils/jobs';
 import { startQueue } from '@/utils/queue';
+
+const formatVramGiB = (value: number) => (Number.isInteger(value) ? `${value}` : value.toFixed(1));
 
 export interface CaptionDatasetModalState {
   datasetPath: string;
@@ -47,11 +54,15 @@ export const CaptionDatasetModal: React.FC = () => {
   const { gpuList, isGPUInfoLoaded } = useGPUInfo();
   const open = modalInfo !== null;
   const isSavingRef = useRef(false);
+  const lowVramModeRef = useRef<'pending' | 'auto' | 'manual'>('pending');
+  const lastAutoLowVramRef = useRef<boolean | null>(null);
   const showGPUSelect = !isMac();
 
   useFromNull(() => {
     // reset the state
     setJobConfig(objectCopy(defaultCaptionJobConfig));
+    lowVramModeRef.current = 'pending';
+    lastAutoLowVramRef.current = null;
     // set the path_to_caption
     if (modalInfo?.datasetPath) {
       setJobConfig(modalInfo.datasetPath, 'config.process[0].caption.path_to_caption');
@@ -74,6 +85,95 @@ export const CaptionDatasetModal: React.FC = () => {
   };
 
   const selectedCaptionOption = captionerTypes.find(option => option.name === jobConfig.config.process[0].type);
+
+  const lowVramRecommendationInfo = useMemo(() => {
+    return getRecommendedCaptionLowVramInfo(jobConfig.config.process[0].type, gpuIDs, gpuList);
+  }, [gpuIDs, gpuList, jobConfig.config.process[0].type]);
+
+  const applyCaptionPresetForType = (typeName: string, force = false) => {
+    const nextConfig = applyCaptionerTypePreset(jobConfig, typeName, {
+      force,
+      gpuIDs,
+      gpuList,
+    });
+    setJobConfig(nextConfig);
+    lowVramModeRef.current = 'auto';
+    lastAutoLowVramRef.current = getRecommendedCaptionLowVramSetting(typeName, gpuIDs, gpuList) ?? null;
+  };
+
+  useEffect(() => {
+    if (!open || !gpuIDs || lowVramModeRef.current !== 'pending') {
+      return;
+    }
+
+    const recommendedLowVram = getRecommendedCaptionLowVramSetting(
+      jobConfig.config.process[0].type,
+      gpuIDs,
+      gpuList,
+    );
+
+    if (recommendedLowVram !== undefined) {
+      setJobConfig(recommendedLowVram, 'config.process[0].caption.low_vram');
+      lastAutoLowVramRef.current = recommendedLowVram;
+    }
+
+    lowVramModeRef.current = 'auto';
+  }, [gpuIDs, gpuList, jobConfig.config.process[0].type, open, setJobConfig]);
+
+  useEffect(() => {
+    if (!open || lowVramModeRef.current !== 'auto') {
+      return;
+    }
+
+    const recommendedLowVram = getRecommendedCaptionLowVramSetting(
+      jobConfig.config.process[0].type,
+      gpuIDs,
+      gpuList,
+    );
+
+    if (recommendedLowVram === undefined) {
+      return;
+    }
+
+    if (lastAutoLowVramRef.current === null) {
+      setJobConfig(recommendedLowVram, 'config.process[0].caption.low_vram');
+      lastAutoLowVramRef.current = recommendedLowVram;
+      return;
+    }
+
+    if (recommendedLowVram === lastAutoLowVramRef.current) {
+      return;
+    }
+
+    if (jobConfig.config.process[0].caption.low_vram !== lastAutoLowVramRef.current) {
+      lowVramModeRef.current = 'manual';
+      lastAutoLowVramRef.current = null;
+      return;
+    }
+
+    setJobConfig(recommendedLowVram, 'config.process[0].caption.low_vram');
+    lastAutoLowVramRef.current = recommendedLowVram;
+  }, [gpuIDs, gpuList, jobConfig.config.process[0].caption.low_vram, jobConfig.config.process[0].type, open, setJobConfig]);
+
+  const lowVramRecommendationText = (() => {
+    if (!lowVramRecommendationInfo) {
+      return null;
+    }
+
+    const recommendationLabel = lowVramRecommendationInfo.recommendedLowVram ? 'On' : 'Off';
+    const gpuLabel = `${formatVramGiB(lowVramRecommendationInfo.selectedGpuVramGiB)} GB`;
+    const thresholdLabel = `${formatVramGiB(lowVramRecommendationInfo.thresholdGiB)} GB`;
+
+    if (lowVramModeRef.current === 'auto') {
+      return `Auto: ${recommendationLabel} for the selected ${gpuLabel} GPU. Threshold: ${thresholdLabel}.`;
+    }
+
+    if (jobConfig.config.process[0].caption.low_vram !== lowVramRecommendationInfo.recommendedLowVram) {
+      return `Recommended for the selected ${gpuLabel} GPU: ${recommendationLabel}. Manual override active.`;
+    }
+
+    return `Recommended for the selected ${gpuLabel} GPU: ${recommendationLabel}. Threshold: ${thresholdLabel}.`;
+  })();
 
   const saveJob = async () => {
     if (isSavingRef.current) return;
@@ -127,7 +227,7 @@ export const CaptionDatasetModal: React.FC = () => {
                   label="Captioner Type"
                   value={jobConfig.config.process[0].type}
                   onChange={value => {
-                    handleCaptionerTypeChange(jobConfig.config.process[0].type, value, jobConfig, setJobConfig);
+                    applyCaptionPresetForType(value);
                   }}
                   options={groupedCaptionerTypes}
                 />
@@ -227,8 +327,13 @@ export const CaptionDatasetModal: React.FC = () => {
                   <Checkbox
                     label="Low VRAM"
                     checked={jobConfig.config.process[0].caption.low_vram}
-                    onChange={value => setJobConfig(value, 'config.process[0].caption.low_vram')}
+                    onChange={value => {
+                      lowVramModeRef.current = 'manual';
+                      lastAutoLowVramRef.current = null;
+                      setJobConfig(value, 'config.process[0].caption.low_vram');
+                    }}
                   />
+                  {lowVramRecommendationText && <p className="mt-2 text-xs text-gray-400">{lowVramRecommendationText}</p>}
                   <Checkbox
                     label="Recaption"
                     checked={jobConfig.config.process[0].caption.recaption}

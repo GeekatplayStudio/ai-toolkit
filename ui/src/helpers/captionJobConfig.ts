@@ -1,5 +1,8 @@
-import { CaptionJobConfig } from "@/types";
-import { captionerTypes } from "./captionOptions";
+import { GpuInfo, CaptionJobConfig } from '@/types';
+import { objectCopy } from '@/utils/basic';
+import { setNestedValue } from '@/utils/hooks';
+import { getSelectedGpuVramGiB } from '@/app/jobs/new/utils';
+import { captionerTypes } from './captionOptions';
 
 
 export const defaultCaptionJobConfig: CaptionJobConfig = {
@@ -27,6 +30,23 @@ export const defaultCaptionJobConfig: CaptionJobConfig = {
   },
 };
 
+const CAPTION_LOW_VRAM_THRESHOLD_BY_TYPE_GIB: Record<string, number> = {
+  AceStepCaptioner: 24,
+  Qwen3VLCaptioner: 24,
+};
+
+const clonePresetValue = <T>(value: T): T => {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  if (Array.isArray(value) || typeof value === 'object') {
+    return objectCopy(value);
+  }
+
+  return value;
+};
+
 
 const repairDefaults = (defaults: { [key: string]: any }) => {
   let newDefaults: { [key: string]: any } = {};
@@ -41,6 +61,75 @@ const repairDefaults = (defaults: { [key: string]: any }) => {
   return newDefaults;
 }
 
+export const getRecommendedCaptionLowVramInfo = (
+  captionerTypeName: string,
+  gpuIDs: string | null,
+  gpuList: GpuInfo[],
+) => {
+  const thresholdGiB = CAPTION_LOW_VRAM_THRESHOLD_BY_TYPE_GIB[captionerTypeName];
+  if (thresholdGiB === undefined) {
+    return undefined;
+  }
+
+  const selectedGpuVramGiB = getSelectedGpuVramGiB(gpuIDs, gpuList);
+  if (selectedGpuVramGiB === null) {
+    return undefined;
+  }
+
+  return {
+    recommendedLowVram: selectedGpuVramGiB <= thresholdGiB,
+    selectedGpuVramGiB,
+    thresholdGiB,
+  };
+};
+
+export const getRecommendedCaptionLowVramSetting = (
+  captionerTypeName: string,
+  gpuIDs: string | null,
+  gpuList: GpuInfo[],
+) => {
+  return getRecommendedCaptionLowVramInfo(captionerTypeName, gpuIDs, gpuList)?.recommendedLowVram;
+};
+
+export const applyCaptionerTypePreset = (
+  jobConfig: CaptionJobConfig,
+  newTypeName: string,
+  options: { force?: boolean; gpuIDs?: string | null; gpuList?: GpuInfo[] } = {},
+) => {
+  const currentTypeName = jobConfig.config.process[0].type;
+  const newType = captionerTypes.find(model => model.name === newTypeName);
+
+  if (!newType) {
+    return jobConfig;
+  }
+
+  if (!options.force && currentTypeName === newTypeName) {
+    return jobConfig;
+  }
+
+  let nextJobConfig = objectCopy(defaultCaptionJobConfig);
+  nextJobConfig.config.process[0].type = newTypeName;
+  nextJobConfig.config.process[0].caption.path_to_caption = jobConfig.config.process[0].caption.path_to_caption;
+  nextJobConfig.config.process[0].caption.recaption = jobConfig.config.process[0].caption.recaption;
+
+  const newDefaults = repairDefaults(newType.defaults || {});
+  for (const [key, value] of Object.entries(newDefaults)) {
+    const selectedValue = Array.isArray(value) ? value[0] : value;
+    nextJobConfig = setNestedValue(nextJobConfig, clonePresetValue(selectedValue), key);
+  }
+
+  const recommendedLowVram = getRecommendedCaptionLowVramSetting(
+    newTypeName,
+    options.gpuIDs ?? null,
+    options.gpuList ?? [],
+  );
+  if (recommendedLowVram !== undefined) {
+    nextJobConfig.config.process[0].caption.low_vram = recommendedLowVram;
+  }
+
+  return nextJobConfig;
+}
+
 
 
 export const handleCaptionerTypeChange = (
@@ -49,26 +138,9 @@ export const handleCaptionerTypeChange = (
   jobConfig: CaptionJobConfig,
   setJobConfig: (value: any, key: string) => void,
 ) => {
-  const currentType = captionerTypes.find(a => a.name === currentTypeName);
-  if (!currentType || currentType.name === newTypeName) {
+  if (currentTypeName === newTypeName) {
     return;
   }
 
-  // update the defaults when a model is selected
-  const newType = captionerTypes.find(model => model.name === newTypeName);
-
-  let currentDefaults = repairDefaults(currentType.defaults || {});
-  let newDefaults = repairDefaults(newType?.defaults || {});
-
-  // set new model
-  setJobConfig(newTypeName, 'config.process[0].type');
-
-  // revert defaults from previous model
-  for (const key in currentDefaults) {
-    setJobConfig(currentDefaults[key][1], key);
-  }
-
-  for (const key in newDefaults) {
-    setJobConfig(newDefaults[key][0], key);
-  }
+  setJobConfig(applyCaptionerTypePreset(jobConfig, newTypeName));
 };

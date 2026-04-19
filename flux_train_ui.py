@@ -18,7 +18,7 @@ from slugify import slugify
 from transformers import AutoProcessor, AutoModelForCausalLM
 
 sys.path.insert(0, "ai-toolkit")
-from toolkit.job import get_job
+from toolkit.job import cleanup_job, get_job, notify_job_error
 
 MAX_IMAGES = 150
 
@@ -164,7 +164,7 @@ def start_training(
         else:
             push_to_hub = False
             gr.Warning("Started training locally. Your LoRa will only be available locally because you didn't login with a `write` token to Hugging Face")
-    except:
+    except Exception:
         push_to_hub = False
         gr.Warning("Started training locally. Your LoRa will only be available locally because you didn't login with a `write` token to Hugging Face")
             
@@ -188,7 +188,7 @@ def start_training(
     if(push_to_hub):
         try:
             username = whoami()["name"]
-        except:
+        except Exception:
             raise gr.Error("Error trying to retrieve your username. Are you sure you are logged in with Hugging Face?")
         config["config"]["process"][0]["save"]["hf_repo_id"] = f"{username}/{slugged_lora_name}"
         config["config"]["process"][0]["save"]["hf_private"] = True
@@ -226,9 +226,21 @@ def start_training(
         yaml.dump(config, f)
     
     # run the job locally
-    job = get_job(config_path)
-    job.run()
-    job.cleanup()
+    job = None
+    try:
+        job = get_job(config_path)
+        job.run()
+    except Exception as e:
+        try:
+            notify_job_error(job, e)
+        except Exception as e2:
+            print(f"Error running on_error: {e2}")
+        raise
+    finally:
+        try:
+            cleanup_job(job)
+        except Exception as cleanup_error:
+            print(f"Error cleaning up job: {cleanup_error}")
 
     return f"Training completed successfully. Model saved as {slugged_lora_name}"
 
