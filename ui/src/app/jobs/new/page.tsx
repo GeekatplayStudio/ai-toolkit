@@ -9,6 +9,7 @@ import {
   clearNewJobDraft,
   loadNewJobDraft,
   mergeDraftWithTemplate,
+  NewJobDraft,
   saveNewJobDraft,
   summarizeDraftPaths,
 } from './draftPersistence';
@@ -50,6 +51,7 @@ export default function TrainingForm() {
   const [jobConfig, setJobConfig] = useNestedState<JobConfig>(migrateJobConfig(objectCopy(defaultJobConfig)));
   const [status, setStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const pendingDraftRef = useRef<Omit<NewJobDraft, 'version' | 'schemaVersion' | 'savedAt'> | null>(null);
 
   const isDraftEligible = !runId;
 
@@ -295,25 +297,58 @@ export default function TrainingForm() {
 
   useEffect(() => {
     if (!isDraftEligible || !isDraftBootstrapped) {
+      pendingDraftRef.current = null;
       return;
     }
 
     if (!preserveSettings) {
+      pendingDraftRef.current = null;
       clearNewJobDraft();
       return;
     }
 
+    const draftToSave = {
+      preserveSettings: true,
+      gpuIDs,
+      showAdvancedView,
+      jobConfig,
+    };
+
+    pendingDraftRef.current = draftToSave;
+
     const timeoutId = window.setTimeout(() => {
-      saveNewJobDraft({
-        preserveSettings: true,
-        gpuIDs,
-        showAdvancedView,
-        jobConfig,
-      });
+      saveNewJobDraft(draftToSave);
     }, 150);
 
     return () => window.clearTimeout(timeoutId);
   }, [gpuIDs, isDraftBootstrapped, isDraftEligible, jobConfig, preserveSettings, showAdvancedView]);
+
+  useEffect(() => {
+    if (!isDraftEligible) {
+      pendingDraftRef.current = null;
+      return;
+    }
+
+    const flushPendingDraft = () => {
+      if (!isDraftBootstrapped) {
+        return;
+      }
+
+      if (!pendingDraftRef.current?.preserveSettings) {
+        clearNewJobDraft();
+        return;
+      }
+
+      saveNewJobDraft(pendingDraftRef.current);
+    };
+
+    window.addEventListener('beforeunload', flushPendingDraft);
+
+    return () => {
+      window.removeEventListener('beforeunload', flushPendingDraft);
+      flushPendingDraft();
+    };
+  }, [isDraftBootstrapped, isDraftEligible]);
 
   const saveJob = async () => {
     if (status === 'saving') return;
